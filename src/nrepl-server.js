@@ -1,4 +1,4 @@
-/*global console,require,module,process,__dirname,setTimeout,clearTimeout*/
+/*global console,require,module,process,__dirname,setTimeout,clearTimeout,Buffer*/
 
 /*
  * Depending on how you start the clojure nREPL server you don't need this.
@@ -7,140 +7,137 @@
  *
  */
 
-var path = require("path");
-var ps = require("child_process");
-var util = require("util");
-var merge = util._extend;
+const path = require("path"),
+      ps = require("child_process"),
+      util = require("util"),
+      EventEmitter = require('events'),
+      merge = util._extend,
+      Promise = require('bluebird'),
+      kill = require('tree-kill');
 
-// note, the JVM will stick around when we just kill the spawning process
-// so we have to do a tree kill for the process. unfortunately the "tree-kill"
-// lib is currently not working on Mac OS, so we need this little hack:
-var kill = (process.platform === 'darwin') ?
-    function(pid, signal) {
-        ps.exec(util.format("ps a -o pid -o ppid |"
-                          + "grep %s | awk '{ print $1 }' |"
-                          + "xargs kill -s %s", pid, signal || 'SIGTERM'));
-    } : require('tree-kill');
+function _spawnProc(that) {
+  const {hostname,port,projectPath,verbose,logger} = that.options;
+  let procArgs = ["repl", ":headless"],
+      proc = null;
 
+  if (hostname) procArgs.push(':host', hostname);
+  if (port) procArgs.push(':port', port);
 
-// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-// Server start implementation. Tries to detect timeouts
-// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+  let cwd = projectPath,
+      cmd = 'lein';
 
-function startSentinel(options, serverState, thenDo) {
-    var proc = serverState.proc,
-        thenDoCalled = false;
+  verbose && logger.debug('Spawning server with', {cmd,procArgs,cwd});
+  try {
+    proc = ps.spawn(cmd, procArgs, {cwd});
+  } catch (e) {
+    that.emit('error', e);
+  }
 
-    if (options.verbose) {
-        proc.on('close', function(code) { console.log("nREPL server stopped with code %s: %s", code); });
-        proc.on('error', function(error) { console.log("nREPL server error %s", error); });
-        proc.stdout.pipe(process.stdout);
-        proc.stderr.pipe(process.stdout);
-    }
+  return proc;
+};
 
-    proc.on('close', function(_) { serverState.exited = true; });
-    checkOutputForServerStart('nREPL server started on');
+function _attachListeners(that) {
+  const proc = that.proc,
+        {logger, verbose} = that.options;
 
-    // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-    // helper
+  if (verbose) {
+    proc.on('close', () => { logger.info("nREPL server stopped", {}); });
+    proc.on('error', (error) => { logger.error("nREPL server error ", {error}); });
+    proc.stderr.on('data', (data) => { logger.error("nREPL error ", data.toString()); });
+  }
 
-    function serverStartDance(serverOutput) {
-        grabHostnameAndPortFromOutput(serverOutput);
-        serverState.started = true;
-        thenDoCalled = true;
-        options.verbose && console.log('nREPL server started');
-        thenDo && thenDo(null, serverState);
-    }
-
-    function timeout() {
-        if (thenDoCalled) return;
-        thenDoCalled = true;
-        thenDo && thenDo(new Error("nrepl server start timeout"), null);
-    }
-
-    function checkOutputForServerStart(expectedOutput) {
-        var timeoutProc = setTimeout(timeout, options.startTimeout),
-            outListener = gatherOut("stdout", check),
-            errListener = gatherOut("stderr", check);
-        proc.stdout.on('data', outListener);
-        proc.stderr.on('data', errListener);
-
-        function check(string) {
-            if (string.indexOf(expectedOutput) === -1) return;
-            proc.stdout.removeListener('data', outListener);
-            proc.stderr.removeListener('data', errListener);
-            clearTimeout(timeoutProc);
-            serverStartDance(string);
-        }
-    }
-
-    function gatherOut(type, subscriber) {
-        return function(data) {
-            serverState[type] = Buffer.concat([serverState[type], data]);
-            subscriber(String(serverState[type]));
-        }
-    }
-
-    function grabHostnameAndPortFromOutput(output) {
-        if (!output) return
-        var match = output.match("on port ([0-9]+) on host ([^\s]+)");
-        if (!match) return;
-        if (match[1]) serverState.port = parseInt(match[1]);
-        if (match[2]) serverState.hostname = match[2];
-    }
-
-}
-
-function startServer(hostname, port, projectPath, thenDo) {
-    try {
-        var procArgs = ["repl", ":headless"];
-        if (hostname) procArgs = procArgs.concat([':host', hostname]);
-        if (port) procArgs = procArgs.concat([':port', port]);
-        var proc = ps.spawn('lein', procArgs, {cwd: projectPath});
-    } catch (e) { thenDo(e, null); return; }
-    thenDo(null, {
-        proc: proc,
-        stdout: new Buffer(""),
-        stderr: new Buffer(""),
-        hostname: undefined, port: undefined, // set when started
-        started: false,
-        exited: false,
-        timedout: undefined
+  proc.on('close', function(_) { that.emit('close', that); });
+  _discoverStart(that)
+    .then(_discoverHostAndPort(that))
+    .then(({host, port}) => {
+      that.host = host;
+      that.port = port;
+      that.emit('start', that);
+      verbose && logger.info(`nREPL server started on ${host}:${port}`);
     });
 }
 
+function _discoverStart(that) {
+  const {verbose,logger} = that.options;
+  return new Promise((resolve, reject) => {
+    let stdout = that.proc.stdout,
+        listener = (data) => {
+          data = data.toString();
+          verbose && logger.debug('Received ', { data });
+          stdout.removeListener('data', listener);
+          resolve(data);
+        };
 
-// -=-=-=-=-=-=-=-=-=-=-
-// the actual interface
-// -=-=-=-=-=-=-=-=-=-=-
-
-var defaultOptions = {
-    startTimeout: 10*1000, // milliseconds
-    verbose: false,
-    projectPath: process.cwd(),
-    // if host / port stay undefined they are choosen by leiningen
-    hostname: undefined,
-    port: undefined
+    stdout.on('data', listener);
+  });
 }
 
-function start(options, thenDo) {
-    options = merge(merge({}, defaultOptions), options);
-    startServer(options.hostname, options.port,
-                options.projectPath, function(err, serverState) {
-                    if (err) thenDo(err, null);
-                    else startSentinel(options, serverState, thenDo);
-                });
+function _discoverHostAndPort(that) {
+  const {verbose,logger} = that.options;
+  return (initializeString) => {
+    const match = initializeString.match(/on port ([0-9]+) on host ([\w.]+)/);
+    verbose && logger.debug('Parsed initialize string', {match});
+
+    const port = parseInt(match[1]),
+          host = match[2];
+
+    return {host, port};
+  };
 }
 
-function stop(serverState, thenDo) {
-    if (serverState.exited) { thenDo(null); return; }
-    // FIXME what if when kill doesn't work? At least attach to `close` and
-    // throw a time out error...
-    kill(serverState.proc.pid, 'SIGTERM');
-    serverState.proc.once('close', function() {
-        console.log("Stopped nREPL server with pid %s", serverState.proc.pid);
-        thenDo && thenDo(null);
+class Server extends EventEmitter {
+  constructor(options) {
+    super();
+    this.options = options;
+    this.proc = _spawnProc(this);
+    _attachListeners(this);
+  }
+
+  stop(cb) {
+    let {verbose,logger} = this.options,
+        pid = this.proc.pid;
+
+    kill(pid, 'SIGTERM');
+    let killTimeout = setTimeout(() => { kill(pid, 'SIGKILL'); }, this.options.stopTimeout);
+
+    this.proc.once('close', function() {
+      clearTimeout(killTimeout);
+      verbose && logger.info("Stopped nREPL server with pid ", {pid});
+      cb && cb();
     });
+  }
 }
 
-module.exports = {start: start, stop: stop};
+
+const consoleLog = console.log.bind(console),
+      consoleError = console.error.bind(console),
+      defaultLogger = {
+        info:  consoleLog,
+        debug:  consoleLog,
+        error: consoleError
+      },
+      defaultOptions = {
+        stopTimeout: 10*1000, // milliseconds
+        verbose: false,
+        projectPath: process.cwd(),
+        // if host / port stay undefined they are chosen by leiningen
+        hostname: undefined,
+        port: undefined,
+        logger: defaultLogger
+      };
+
+function start(options, cb) {
+  let server = new Server(merge(merge({}, defaultOptions), options));
+  if(cb) {
+    server.once('start', (server) => {
+      cb(null, server);
+    });
+
+    server.on('error', (err) => {
+      cb(err);
+    });
+  }
+  return server;
+}
+
+module.exports = {start: start};
