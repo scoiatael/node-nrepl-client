@@ -7,7 +7,7 @@ var async = require("async");
 const serverOpts = {verbose: true, startTimeout: 20*1000},
     timeoutDelay = 10*1000;
 
-let server, client, timeoutProc;
+var server, client, timeoutProc;
 
 function createTimeout(test) {
   return timeoutProc = setTimeout(function() {
@@ -40,10 +40,11 @@ var tests = {
 
   tearDown: function (cb) {
     if(!client) {
-      cb(); 
+      cb();
     }
     else {
       client.once('close', function() {
+        console.log("Closing..")
         clearTimeout(timeoutProc);
         server.stop(cb);
       });
@@ -59,6 +60,7 @@ var tests = {
       test.ok(!err, 'Got errors: ' + err);
       test.equal(messages[0].value, '7');
       test.deepEqual(messages[1].status, ['done']);
+      console.log('All fine');
       test.done();
     });
   }

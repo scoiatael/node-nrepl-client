@@ -1,3 +1,4 @@
+'use strict';
 /*global console,require,module,process,__dirname,setTimeout,clearTimeout,Buffer*/
 
 /*
@@ -17,23 +18,30 @@ const path = require("path"),
       kill = require('tree-kill');
 
 function _spawnProc(that) {
-  const {hostname,port,projectPath,verbose,logger} = that.options;
-  let procArgs = ["repl", ":headless"],
+  const hostname = that.options.hostname,
+    port = that.options.port,
+    projectPath = that.options.projectPath,
+    verbose = that.options.verbose,
+    logger = that.options.logger;
+  var procArgs = ["repl", ":headless"],
       proc = null;
 
   if (hostname) procArgs.push(':host', hostname);
   if (port) procArgs.push(':port', port);
 
-  let cwd = projectPath,
+  var cwd = projectPath,
       cmd = 'lein';
 
   if(os.platform() == 'win32') {
     cmd = 'lein.bat';
   }
 
-  verbose && logger.debug('Spawning server with', {cmd,procArgs,cwd});
+  verbose && logger.debug('Spawning server with', { cmd: cmd,
+     procArgs: procArgs,
+     cwd: cwd
+   });
   try {
-    proc = ps.spawn(cmd, procArgs, {cwd});
+    proc = ps.spawn(cmd, procArgs, {cwd: cwd});
   } catch (e) {
     that.emit('error', e);
   }
@@ -43,32 +51,34 @@ function _spawnProc(that) {
 
 function _attachListeners(that) {
   const proc = that.proc,
-        {logger, verbose} = that.options;
+        logger = that.options.logger,
+         verbose = that.options.verbose;
 
   if (verbose) {
     proc.on('close', () => { logger.info("nREPL server stopped", {}); });
-    proc.on('error', (error) => { logger.error("nREPL server error ", {error}); });
-    proc.stderr.on('data', (data) => { logger.error("nREPL error ", data.toString()); });
+    proc.on('error', (error) => { logger.error("nREPL server error ", {error: error}); });
+    proc.stderr.on('data', (data) => { logger.error("nREPL error ", {error: data.toString()}); });
   }
 
   proc.on('close', function(_) { that.emit('close', that); });
   _discoverStart(that)
     .then(_discoverHostAndPort(that))
-    .then(({host, port}) => {
-      that.host = host;
-      that.port = port;
+    .then((opts) => {
+      that.host = opts.host;
+      that.port = opts.port;
       that.emit('start', that);
-      verbose && logger.info(`nREPL server started on ${host}:${port}`);
+      verbose && logger.info(`nREPL server started on ${that.host}:${that.port}`);
     });
 }
 
 function _discoverStart(that) {
-  const {verbose,logger} = that.options;
+  const verbose = that.options.verbose,
+        logger = that.options.logger;
   return new Promise((resolve, reject) => {
     let stdout = that.proc.stdout,
         listener = (data) => {
           data = data.toString();
-          verbose && logger.debug('Received ', { data });
+          verbose && logger.debug('Received ', { data: data });
           stdout.removeListener('data', listener);
           resolve(data);
         };
@@ -78,10 +88,11 @@ function _discoverStart(that) {
 }
 
 function _discoverHostAndPort(that) {
-  const {verbose,logger} = that.options;
+  const verbose = that.options.verbose,
+        logger = that.options.logger;
   return (initializeString) => {
     const match = initializeString.match(/on port ([0-9]+) on host ([\w.]+)/);
-    verbose && logger.debug('Parsed initialize string', {match});
+    verbose && logger.debug('Parsed initialize string', { match: match });
 
     const port = parseInt(match[1]),
           host = match[2];
@@ -99,7 +110,9 @@ class Server extends EventEmitter {
   }
 
   stop(cb) {
-    let {verbose,logger,stopTimeout} = this.options,
+    const verbose = this.options.verbose,
+        logger = this.options.logger,
+        stopTimeout = this.options.stopTimeout,
         pid = this.proc.pid;
 
     kill(pid, 'SIGTERM');
@@ -107,7 +120,7 @@ class Server extends EventEmitter {
 
     this.proc.once('close', function() {
       clearTimeout(killTimeout);
-      verbose && logger.info("Stopped nREPL server with pid ", {pid});
+      verbose && logger.info("Stopped nREPL server with pid ", { pid: pid });
       cb && cb();
     });
   }
