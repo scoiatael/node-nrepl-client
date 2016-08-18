@@ -13,6 +13,7 @@ const path = require("path"),
       EventEmitter = require('events'),
       merge = util._extend,
       Promise = require('bluebird'),
+      os = require('os'),
       kill = require('tree-kill');
 
 function _spawnProc(that) {
@@ -25,6 +26,10 @@ function _spawnProc(that) {
 
   let cwd = projectPath,
       cmd = 'lein';
+
+  if(os.platform() == 'win32') {
+    cmd = 'lein.bat';
+  }
 
   verbose && logger.debug('Spawning server with', {cmd,procArgs,cwd});
   try {
@@ -94,11 +99,11 @@ class Server extends EventEmitter {
   }
 
   stop(cb) {
-    let {verbose,logger} = this.options,
+    let {verbose,logger,stopTimeout} = this.options,
         pid = this.proc.pid;
 
     kill(pid, 'SIGTERM');
-    let killTimeout = setTimeout(() => { kill(pid, 'SIGKILL'); }, this.options.stopTimeout);
+    let killTimeout = setTimeout(() => { kill(pid, 'SIGKILL'); }, stopTimeout);
 
     this.proc.once('close', function() {
       clearTimeout(killTimeout);
