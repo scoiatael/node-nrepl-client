@@ -60,6 +60,9 @@ function _attachListeners(that) {
     proc.stderr.on('data', (data) => { logger.error("nREPL error ", {error: data.toString()}); });
   }
 
+  proc.on('error', (error) => {
+    that.emit('error', {error: error});
+  });
   proc.on('close', function(_) { that.emit('close', that); });
   _discoverStart(that)
     .then(_discoverHostAndPort(that))
@@ -107,6 +110,9 @@ class Server extends EventEmitter {
     this.options = options;
     this.proc = _spawnProc(this);
     _attachListeners(this);
+    this.on('error', (error) => {
+      this.error = error;
+    });
   }
 
   stop(cb) {
